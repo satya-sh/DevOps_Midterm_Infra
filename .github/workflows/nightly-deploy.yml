@@ -67,7 +67,7 @@ jobs:
       #-----------------------------------------------------------
       # 5) Get the Public IP/Hostname of temp EC2
       #-----------------------------------------------------------
-      - name: Fetch Ephemeral EC2 Hostname
+      - name: Fetch temp EC2 Hostname
         id: get_temp_ec2
         run: |
           PUBLIC_DNS=$(aws ec2 describe-instances \
@@ -81,10 +81,10 @@ jobs:
       #-----------------------------------------------------------
       # 6) SSH in to install Docker and initial setup
       #-----------------------------------------------------------
-      - name: Install Docker on Ephemeral EC2
+      - name: Install Docker on temp EC2
         run: |
           TEMP_HOST="${{ steps.get_temp_ec2.outputs.public_dns }}"
-          echo "🔑 SSHing into ephemeral EC2 at $TEMP_HOST to install Docker..."
+          echo "🔑 SSHing into temp EC2 at $TEMP_HOST to install Docker..."
 
           ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@"$TEMP_HOST" << 'EOF'
             set -e
@@ -261,7 +261,7 @@ jobs:
       #-----------------------------------------------------------
       # 7) SSH in again to build and test (after group membership is active)
       #-----------------------------------------------------------
-      - name: Build & Test on Ephemeral EC2
+      - name: Build & Test on temp EC2
         id: build_test_ec2
         run: |
           TEMP_HOST="${{ steps.get_temp_ec2.outputs.public_dns }}"
