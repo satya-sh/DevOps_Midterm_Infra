@@ -76,11 +76,13 @@ jobs:
           echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
 
           # 4) Tag & push the FRONTEND image to ECR devops-midterm-frontend
-          docker tag "$FRONTEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-frontend:$TIMESTAMP
+          FRONTEND_TIMESTAMP_TAG="frontend-${TIMESTAMP}"
+          docker tag "$FRONTEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-frontend:$FRONTEND_TIMESTAMP_TAG
           docker tag "$FRONTEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-frontend:latest
           docker push --all-tags ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-frontend
 
           # 5) Tag & push the BACKEND image to ECR devops-midterm-backend
-          docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend:$TIMESTAMP
+          BACKEND_TIMESTAMP_TAG="backend-${TIMESTAMP}"
+          docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend:$BACKEND_TIMESTAMP_TAG
           docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend:latest
           docker push --all-tags ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend
