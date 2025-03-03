@@ -390,7 +390,9 @@ jobs:
             aws ecr get-login-password --region \${AWS_REGION} \
               | docker login --username AWS --password-stdin \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com
 
-            docker-compose -f docker-compose.prod.yml --env-file .env down -v
+            docker-compose \
+              -f /home/ec2-user/DevOps_Midterm_Source/docker-compose.prod.yml \
+              --env-file /home/ec2-user/DevOps_Midterm_Source/.env down -v
 
             docker rmi devops_midterm_source-nginx devops_midterm_source-backend || true
             
@@ -398,7 +400,9 @@ jobs:
             docker pull \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
             docker pull \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
             
-            docker-compose -f docker-compose.ecr.yml --env-file .env up -d
+            docker-compose \
+              -f /home/ec2-user/DevOps_Midterm_Source/docker-compose.ecr.yml \
+              --env-file /home/ec2-user/DevOps_Midterm_Source/.env up -d
 
             docker ps
             
