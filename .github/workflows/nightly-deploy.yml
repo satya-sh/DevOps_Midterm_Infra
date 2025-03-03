@@ -86,3 +86,191 @@ jobs:
           docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend:$BACKEND_TIMESTAMP_TAG
           docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend:latest
           docker push --all-tags ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend
+    
+      # 6) Launch Temporary EC2 for Smoke Test
+      - name: Launch Temporary EC2 for Smoke Test
+        id: launch_ec2
+        run: |
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id ami-05b10e08d247fb927 \ 
+            --count 1 \
+            --instance-type t2.micro \
+            --key-name EC2Key \
+            --security-group-ids sg-02dee4b3e051069a3 \
+            --subnet-id subnet-063de57a204cf6892 \
+            --query 'Instances[0].InstanceId' \
+            --output text)
+          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+          aws ec2 wait instance-running --instance-ids $INSTANCE_ID
+          sleep 10
+
+      # 7) Set up SSH Key
+      - name: Set up SSH Key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > ec2-key.pem
+          chmod 400 ec2-key.pem
+
+      # 8) Pull Images on Temporary EC2 and Run Smoke Tests
+      - name: Pull Images on Temporary EC2 and Run Smoke Tests
+        run: |
+          # 1) Get the Public DNS of the ephemeral instance we launched
+          PUBLIC_DNS=$(aws ec2 describe-instances \
+            --instance-ids ${{ env.INSTANCE_ID }} \
+            --query 'Reservations[0].Instances[0].PublicDnsName' \
+            --output text)
+
+          echo "Ephemeral Instance DNS: $PUBLIC_DNS"
+
+          # 2) SSH into that instance
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no ec2-user@"$PUBLIC_DNS" << 'EOF'
+            set -e
+
+            echo "✅ Connected to ephemeral EC2. Installing Docker + Docker Compose..."
+
+            # 2a) Install Docker + start it
+            sudo yum install -y docker
+            sudo service docker start
+            sudo usermod -aG docker ec2-user
+
+            curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+              -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+
+            # 2b) Log in to ECR so we can pull images
+            aws ecr get-login-password --region ${AWS_REGION} \
+              | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com
+          
+            # 3) Pull your newly pushed images
+            echo "Pulling the frontend + backend images from ECR..."
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
+
+            # 4) Run them in a quick test setup
+            echo "Running containers on ephemeral EC2..."
+            cat <<EOC > docker-compose-test.yml
+            version: "3.9"
+            services:
+              backend:
+                image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
+                container_name: ephemeral-backend
+                expose:
+                  - "8800"
+              nginx:
+                image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
+                container_name: ephemeral-frontend
+                ports:
+                  - "80:80"
+                depends_on:
+                  - backend
+            EOC
+
+            docker compose -f docker-compose-test.yml up -d
+            sleep 10  
+
+            echo "✅ Containers started. Now performing smoke tests..."
+
+            # =====================
+            # 5) Smoke Tests
+            # =====================
+
+            # (A) Check the root URL:
+            echo "Checking React frontend at root URL..."
+            HTTP_ROOT=\$(curl -i -s -L -k http://localhost/)
+            echo "\$HTTP_ROOT" | grep -q "200 OK"
+            echo "\$HTTP_ROOT" | grep -qi "<html"
+            echo "✅ Root URL returned 200 and HTML"
+
+            # (B) Check the /api/books endpoint:
+            echo "Checking backend API: GET /api/books..."
+            HTTP_API=\$(curl -i -s -L -k http://localhost/api/books)
+            echo "\$HTTP_API" | grep -q "200 OK"
+
+            JSON_BODY=\$(echo "\$HTTP_API" | awk '/^\[|^\{/{flag=1} flag{print}')
+            if [[ "\$JSON_BODY" =~ ^(\[|\{) ]]; then
+              echo "✅ /api/books endpoint returned 200 and valid JSON"
+            else
+              echo "❌ /api/books returned 200 but did not contain JSON"
+            exit 1
+            fi
+
+            # (C) A failing test (commented out)
+            # echo "Simulating a failing test..."
+            # curl -f http://localhost/this-route-doesnt-exist  # Will fail with exit code 22
+            # echo "❌ Should never get here, because above line fails."
+
+            echo "✅ All ephemeral smoke tests passed successfully on ephemeral instance!"
+
+            # 6) Stop containers
+            docker compose -f docker-compose-test.yml down
+
+            # Done
+            exit 0
+          EOF
+      
+      # 9) Deploy to QA EC2 if ephemeral tests pass
+      - name: Deploy to QA EC2
+        if: success()
+        run: |
+          echo "Smoke test succeeded. Deploying latest images to QA..."
+
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }} << EOF
+            export AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+            export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            export AWS_REGION=${{ env.AWS_REGION }}
+
+            # ECR login
+            aws ecr get-login-password --region \$AWS_REGION \
+              | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.\$AWS_REGION.amazonaws.com
+
+            # Pull the new images
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.\$AWS_REGION.amazonaws.com/devops-midterm-frontend:${IMAGE_TAG}
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.\$AWS_REGION.amazonaws.com/devops-midterm-backend:${IMAGE_TAG}
+
+            # e.g. docker-compose -f docker-compose-qa.yml up
+            docker-compose down
+            docker-compose -f docker-compose-qa.yml up -d
+            docker image prune -f
+          EOF
+
+      # 10) Delete Images in ECR if Test Fails
+      - name: Delete Images in ECR if Test Fails
+        if: failure()
+        run: |
+          echo "Smoke test failed. Cleaning up Docker images in ECR..."
+
+          PRE_FRONTEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-frontend \
+            --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
+          PRE_BACKEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-backend \
+            --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
+
+          aws ecr batch-delete-image --repository-name book-app/frontend --image-ids imageTag=${{ env.TIMESTAMP }}
+          aws ecr batch-delete-image --repository-name book-app/frontend --image-ids imageTag=${{ env.IMAGE_TAG }}
+          aws ecr batch-delete-image --repository-name book-app/backend --image-ids imageTag=${{ env.TIMESTAMP }}
+          aws ecr batch-delete-image --repository-name book-app/backend --image-ids imageTag=${{ env.IMAGE_TAG }}
+
+          if [ -z "$PRE_FRONTEND_IMAGE_TAG" ]; then
+            echo "❌ No previous images found. Cannot restore 'latest'."
+            exit 1
+          fi
+
+          if [ -z "$PRE_BACKEND_IMAGE_TAG" ]; then
+            echo "❌ No previous images found. Cannot restore 'latest'."
+            exit 1
+          fi
+
+          echo "🔄 Previous valid frontend image found: $PRE_FRONTEND_IMAGE_TAG"
+          echo "🔄 Previous valid backend image found: $PRE_BACKEND_IMAGE_TAG"
+
+          # Save the image manifest 
+          FRONTEND_MANIFEST=$(aws ecr batch-get-image --repository-name book-app/frontend --image-ids imageTag="$PRE_FRONTEND_IMAGE_TAG" --output text --query 'images[].imageManifest')
+          BACKEND_MANIFEST=$(aws ecr batch-get-image --repository-name book-app/backend --image-ids imageTag="$PRE_BACKEND_IMAGE_TAG" --output text --query 'images[].imageManifest')
+
+          # Retag
+          aws ecr put-image --repository-name book-app/frontend --image-tag ${{ env.IMAGE_TAG }} --image-manifest "$FRONTEND_MANIFEST"
+          aws ecr put-image --repository-name book-app/backend --image-tag ${{ env.IMAGE_TAG }} --image-manifest "$BACKEND_MANIFEST"
+
+      # 11) Terminate Temporary EC2 Instance
+      - name: Terminate Temporary EC2 Instance
+        run: |
+          echo "Terminating ephemeral instance: ${{ env.INSTANCE_ID }}"
+          aws ec2 terminate-instances --instance-ids ${{ env.INSTANCE_ID }}
