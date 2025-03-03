@@ -89,116 +89,106 @@ jobs:
           
           echo "🔑 SSHing into ephemeral EC2 at $TEMP_HOST..."
 
-          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@"$TEMP_HOST" << 'REMOTE_CMDS'
-            set -e
-
-            echo "✅ Connected to ephemeral EC2. Installing Docker + Docker Compose..."
-            sudo yum update -y
-            sudo yum install -y docker git
-            sudo service docker start
-            sudo usermod -aG docker ec2-user
-            
-            # Install Docker Compose
-            sudo curl -L \
-              "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-              -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
-            
-            echo "Docker version:"
-            docker --version
-            echo "Docker Compose version:"
-            docker-compose --version
-
-            # Log into ECR so we can push images later
-            aws ecr get-login-password --region ${AWS_REGION} \
-              | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com
-
-            #-----------------------------------
-            # 1) Clone your PUBLIC Source Repo
-            #-----------------------------------
-            git clone "${{ env.SOURCE_REPO_URL }}" source
-            
-            cd source
-            
-            #-----------------------------------
-            # 2) Make a .env for your DB secrets
-            #-----------------------------------
-            cat <<EOF > .env
-            DB_HOST=${{ secrets.RDS_ENDPOINT }}
-            DB_USER=${{ secrets.RDS_USERNAME }}
-            DB_PASSWORD=${{ secrets.RDS_PASSWORD }}
-            DB_NAME=${{ secrets.RDS_DBNAME }}
-            DB_PORT=3306
-            EOF
-
-            #-----------------------------------
-            # 3) Build containers with docker-compose.prod.yml
-            #-----------------------------------
-            echo "🛠  Building images with docker-compose.prod.yml..."
-            docker-compose -f docker-compose.prod.yml --env-file .env build
-
-            #-----------------------------------
-            # 4) Start them up for Smoke Test
-            #-----------------------------------
-            docker-compose -f docker-compose.prod.yml --env-file .env up -d
-            echo "Waiting 15s for containers to settle..."
-            sleep 15
-
-            #-----------------------------------
-            # 5) Quick Smoke Tests
-            #-----------------------------------
-            echo "Running smoke tests..."
-
-            # (A) Check React root page
-            HTTP_ROOT=$(curl -i -s -L http://localhost)
-            echo "$HTTP_ROOT" | grep -q "200 OK"
-            echo "$HTTP_ROOT" | grep -qi "<html"
-            echo "✅ Root page is serving HTML."
-
-            # (B) Check the /api/books
-            API_RESP=$(curl -i -s -L http://localhost/api/books)
-            echo "$API_RESP" | grep -q "200 OK"
-            echo "$API_RESP" | grep -qi "\\[\\{\\|\\[\\]\\|\\{\\}"
-            echo "✅ /api/books returned 200 and JSON-like response."
-
-            echo "Smoke tests succeeded."
-
-            #-----------------------------------
-            # 6) Stop containers
-            #-----------------------------------
-            docker-compose -f docker-compose.prod.yml --env-file .env down
-
-            #-----------------------------------
-            # 7) Tag & Push to ECR
-            #-----------------------------------
-            echo "🔨 Identifying built images..."
-            
-            FRONTEND_IMAGE_ID=$(docker images --filter=reference="source-nginx" --format "{{.ID}}")
-            BACKEND_IMAGE_ID=$(docker images --filter=reference="source-backend" --format "{{.ID}}")
-
-            if [ -z "$FRONTEND_IMAGE_ID" ] || [ -z "$BACKEND_IMAGE_ID" ]; then
-              echo "❌ Could not find built images source-nginx or source-backend!"
-              exit 1
-            fi
-
-            TIMESTAMP=$(date "+%Y%m%d.%H%M%S")
-            echo "✅ Found images. Using TIMESTAMP $TIMESTAMP for tagging."
-
-            # FRONTEND
-            docker tag "$FRONTEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:frontend-$TIMESTAMP
-            docker tag "$FRONTEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
-            docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:frontend-$TIMESTAMP
-            docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
-            
-            # BACKEND
-            docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:backend-$TIMESTAMP
-            docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
-            docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:backend-$TIMESTAMP
-            docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
-
-            # If we got here, ephemeral test & push succeeded!
-            echo "✅ Ephemeral test + push to ECR succeeded."
-          REMOTE_CMDS
+          # Using the example's approach of passing environment variables directly
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@"$TEMP_HOST" \
+          "export AWS_REGION=${{ env.AWS_REGION }}; \
+          export AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}; \
+          export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}; \
+          export AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}; \
+          export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}; \
+          export SOURCE_REPO_URL=${{ env.SOURCE_REPO_URL }}; \
+          \
+          echo \"✅ Connected to ephemeral EC2. Installing Docker + Docker Compose...\"; \
+          sudo yum update -y && \
+          sudo yum install -y docker git && \
+          sudo service docker start && \
+          sudo usermod -aG docker ec2-user && \
+          \
+          # Install Docker Compose \
+          sudo curl -L \"https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)\" \
+            -o /usr/local/bin/docker-compose && \
+          sudo chmod +x /usr/local/bin/docker-compose && \
+          \
+          echo \"Docker version:\" && \
+          docker --version && \
+          echo \"Docker Compose version:\" && \
+          docker-compose --version && \
+          \
+          # Log into ECR so we can push images later \
+          aws ecr get-login-password --region ${AWS_REGION} | \
+            docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com && \
+          \
+          # Clone your PUBLIC Source Repo \
+          git clone \"${SOURCE_REPO_URL}\" source && \
+          \
+          cd source && \
+          \
+          # Make a .env for your DB secrets \
+          cat <<EOF > .env \
+          DB_HOST=${{ secrets.RDS_ENDPOINT }} \
+          DB_USER=${{ secrets.RDS_USERNAME }} \
+          DB_PASSWORD=${{ secrets.RDS_PASSWORD }} \
+          DB_NAME=${{ secrets.RDS_DBNAME }} \
+          DB_PORT=3306 \
+          EOF \
+          \
+          # Build containers with docker-compose.prod.yml \
+          echo \"🛠  Building images with docker-compose.prod.yml...\" && \
+          docker-compose -f docker-compose.prod.yml --env-file .env build && \
+          \
+          # Start them up for Smoke Test \
+          docker-compose -f docker-compose.prod.yml --env-file .env up -d && \
+          echo \"Waiting 15s for containers to settle...\" && \
+          sleep 15 && \
+          \
+          # Quick Smoke Tests \
+          echo \"Running smoke tests...\" && \
+          \
+          # (A) Check React root page \
+          HTTP_ROOT=\$(curl -i -s -L http://localhost) && \
+          echo \"\$HTTP_ROOT\" | grep -q \"200 OK\" && \
+          echo \"\$HTTP_ROOT\" | grep -qi \"<html\" && \
+          echo \"✅ Root page is serving HTML.\" && \
+          \
+          # (B) Check the /api/books \
+          API_RESP=\$(curl -i -s -L http://localhost/api/books) && \
+          echo \"\$API_RESP\" | grep -q \"200 OK\" && \
+          echo \"\$API_RESP\" | grep -qi \"\\[\\{\\|\\[\\]\\|\\{\\}\" && \
+          echo \"✅ /api/books returned 200 and JSON-like response.\" && \
+          \
+          echo \"Smoke tests succeeded.\" && \
+          \
+          # Stop containers \
+          docker-compose -f docker-compose.prod.yml --env-file .env down && \
+          \
+          # Tag & Push to ECR \
+          echo \"🔨 Identifying built images...\" && \
+          \
+          FRONTEND_IMAGE_ID=\$(docker images --filter=reference=\"source-nginx\" --format \"{{.ID}}\") && \
+          BACKEND_IMAGE_ID=\$(docker images --filter=reference=\"source-backend\" --format \"{{.ID}}\") && \
+          \
+          if [ -z \"\$FRONTEND_IMAGE_ID\" ] || [ -z \"\$BACKEND_IMAGE_ID\" ]; then \
+            echo \"❌ Could not find built images source-nginx or source-backend!\" && \
+            exit 1; \
+          fi && \
+          \
+          TIMESTAMP=\$(date \"+%Y%m%d.%H%M%S\") && \
+          echo \"✅ Found images. Using TIMESTAMP \$TIMESTAMP for tagging.\" && \
+          \
+          # FRONTEND \
+          docker tag \"\$FRONTEND_IMAGE_ID\" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:frontend-\$TIMESTAMP && \
+          docker tag \"\$FRONTEND_IMAGE_ID\" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest && \
+          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:frontend-\$TIMESTAMP && \
+          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest && \
+          \
+          # BACKEND \
+          docker tag \"\$BACKEND_IMAGE_ID\" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:backend-\$TIMESTAMP && \
+          docker tag \"\$BACKEND_IMAGE_ID\" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest && \
+          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:backend-\$TIMESTAMP && \
+          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest && \
+          \
+          # If we got here, ephemeral test & push succeeded! \
+          echo \"✅ Ephemeral test + push to ECR succeeded.\""
 
         # If SSH or the remote commands fail, this entire step fails, which will trigger the "if: failure()" logic below.
 
@@ -210,24 +200,28 @@ jobs:
         run: |
           echo "Smoke test (ephemeral test) succeeded. Deploying latest images to QA..."
 
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }} << 'QA_DEPLOY'
-            set -e
-            # Re-log into ECR
-            aws ecr get-login-password --region ${AWS_REGION} \
-              | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com
-
-            # Pull the new images
-            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
-            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
-
-            # Example: if you have a custom "docker-compose-qa.yml," use that. Or do your usual production docker-compose.
-            # For simplicity:
-            docker-compose down
-            docker-compose up -d
-            docker image prune -f
-
-            echo "✅ Deployed to QA EC2 successfully."
-          QA_DEPLOY
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }} \
+          "export AWS_REGION=${{ env.AWS_REGION }}; \
+          export AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}; \
+          export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}; \
+          export AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}; \
+          export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}; \
+          \
+          # Re-log into ECR \
+          aws ecr get-login-password --region ${AWS_REGION} | \
+            docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com && \
+          \
+          # Pull the new images \
+          docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest && \
+          docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest && \
+          \
+          # Example: if you have a custom "docker-compose-qa.yml," use that. Or do your usual production docker-compose. \
+          # For simplicity: \
+          docker-compose down && \
+          docker-compose up -d && \
+          docker image prune -f && \
+          \
+          echo \"✅ Deployed to QA EC2 successfully.\""
 
       #-----------------------------------------------------------
       # 8) Delete Images in ECR if Ephemeral Test Fails
