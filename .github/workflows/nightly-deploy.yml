@@ -79,252 +79,198 @@ jobs:
           echo "Ephemeral EC2 Hostname: $PUBLIC_DNS"
 
       #-----------------------------------------------------------
-      # 6) SSH in, Install Docker + Docker Compose, Clone Repo, Build & Test
+      # 6) SSH in to install Docker and initial setup
+      #-----------------------------------------------------------
+      - name: Install Docker on Ephemeral EC2
+        run: |
+          TEMP_HOST="${{ steps.get_temp_ec2.outputs.public_dns }}"
+          echo "🔑 SSHing into ephemeral EC2 at $TEMP_HOST to install Docker..."
+
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@"$TEMP_HOST" << 'EOF'
+            set -e
+            echo "✅ Connected to ephemeral EC2. Installing Docker + Docker Compose..."
+            sudo yum update -y
+            sudo yum install -y docker git
+            sudo service docker start
+            sudo usermod -aG docker ec2-user
+            
+            # Install Docker Compose
+            sudo curl -L \
+              "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+              -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            
+            echo "Docker version:"
+            docker --version
+            echo "Docker Compose version:"
+            docker-compose --version
+            
+            # Create environment files directory for future use
+            mkdir -p ~/env_files
+          EOF
+
+      #-----------------------------------------------------------
+      # 6b) Create environment file on the EC2 instance
+      #-----------------------------------------------------------
+      - name: Setup Environment Files
+        run: |
+          TEMP_HOST="${{ steps.get_temp_ec2.outputs.public_dns }}"
+          
+          # Create .env file content locally
+          cat > .env << EOF
+          DB_HOST=${{ secrets.RDS_ENDPOINT }}
+          DB_USER=${{ secrets.RDS_USERNAME }}
+          DB_PASSWORD=${{ secrets.RDS_PASSWORD }}
+          DB_NAME=${{ secrets.RDS_DBNAME }}
+          DB_PORT=3306
+          EOF
+          
+          # Create AWS credentials file
+          cat > aws_creds.sh << EOF
+          export AWS_REGION=${{ env.AWS_REGION }}
+          export AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          export AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}
+          export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+          EOF
+          
+          # Copy files to EC2 instance
+          scp -o StrictHostKeyChecking=no -i ec2-key.pem .env ec2-user@"$TEMP_HOST":~/env_files/
+          scp -o StrictHostKeyChecking=no -i ec2-key.pem aws_creds.sh ec2-user@"$TEMP_HOST":~/env_files/
+
+      #-----------------------------------------------------------
+      # 7) SSH in again to build and test (after group membership is active)
       #-----------------------------------------------------------
       - name: Build & Test on Ephemeral EC2
         id: build_test_ec2
         run: |
-          # Grab the ephemeral instance DNS name from previous step
           TEMP_HOST="${{ steps.get_temp_ec2.outputs.public_dns }}"
-          
-          echo "🔑 SSHing into ephemeral EC2 at $TEMP_HOST..."
+          echo "🔑 SSHing into ephemeral EC2 at $TEMP_HOST for build and test..."
 
-          # First, create a script file with the commands
-          cat > ec2_build_script.sh << 'EOF'
-          #!/bin/bash
-          set -e
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@"$TEMP_HOST" << 'EOF'
+            set -e
+            
+            # Source AWS credentials
+            source ~/env_files/aws_creds.sh
+            
+            # Log into ECR
+            aws ecr get-login-password --region ${AWS_REGION} \
+              | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
-          # These variables will be replaced when sending the file
-          AWS_REGION="__AWS_REGION__"
-          AWS_ACCESS_KEY_ID="__AWS_ACCESS_KEY_ID__"
-          AWS_SECRET_ACCESS_KEY="__AWS_SECRET_ACCESS_KEY__"
-          AWS_SESSION_TOKEN="__AWS_SESSION_TOKEN__"
-          AWS_ACCOUNT_ID="__AWS_ACCOUNT_ID__"
-          SOURCE_REPO_URL="__SOURCE_REPO_URL__"
-          RDS_ENDPOINT="__RDS_ENDPOINT__"
-          RDS_USERNAME="__RDS_USERNAME__"
-          RDS_PASSWORD="__RDS_PASSWORD__"
-          RDS_DBNAME="__RDS_DBNAME__"
-
-          # Export AWS credentials
-          export AWS_REGION
-          export AWS_ACCESS_KEY_ID
-          export AWS_SECRET_ACCESS_KEY
-          export AWS_SESSION_TOKEN
-
-          echo "✅ Connected to ephemeral EC2. Installing Docker + Docker Compose..."
-          sudo yum update -y
-          sudo yum install -y docker git
-          sudo service docker start
-          sudo usermod -aG docker ec2-user
-
-          # Install Docker Compose
-          sudo curl -L \
-            "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-            -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
-          
-          echo "Docker version:"
-          docker --version
-          echo "Docker Compose version:"
-          docker-compose --version
-
-          # Log into ECR so we can push images later
-          aws ecr get-login-password --region ${AWS_REGION} \
-            | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-
-          #-----------------------------------
-          # 1) Clone your PUBLIC Source Repo
-          #-----------------------------------
-          git clone "${SOURCE_REPO_URL}" source
-          
-          cd source
-          
-          #-----------------------------------
-          # 2) Make a .env for your DB secrets
-          #-----------------------------------
-          cat <<ENVFILE > .env
-          DB_HOST=${RDS_ENDPOINT}
-          DB_USER=${RDS_USERNAME}
-          DB_PASSWORD=${RDS_PASSWORD}
-          DB_NAME=${RDS_DBNAME}
-          DB_PORT=3306
-          ENVFILE
-
-          #-----------------------------------
-          # 3) Build containers with docker-compose.prod.yml
-          #-----------------------------------
-          echo "🛠  Building images with docker-compose.prod.yml..."
-          docker-compose -f docker-compose.prod.yml --env-file .env build
-
-          #-----------------------------------
-          # 4) Start them up for Smoke Test
-          #-----------------------------------
-          docker-compose -f docker-compose.prod.yml --env-file .env up -d
-          echo "Waiting 15s for containers to settle..."
-          sleep 15
-
-          #-----------------------------------
-          # 5) Quick Smoke Tests
-          #-----------------------------------
-          echo "Running smoke tests..."
-
-          # (A) Check React root page
-          HTTP_ROOT=$(curl -i -s -L http://localhost)
-          echo "$HTTP_ROOT" | grep -q "200 OK"
-          echo "$HTTP_ROOT" | grep -qi "<html"
-          echo "✅ Root page is serving HTML."
-
-          # (B) Check the /api/books
-          API_RESP=$(curl -i -s -L http://localhost/api/books)
-          echo "$API_RESP" | grep -q "200 OK"
-          echo "$API_RESP" | grep -qi "\\[\\{\\|\\[\\]\\|\\{\\}"
-          echo "✅ /api/books returned 200 and JSON-like response."
-
-          echo "Smoke tests succeeded."
-
-          #-----------------------------------
-          # 6) Stop containers
-          #-----------------------------------
-          docker-compose -f docker-compose.prod.yml --env-file .env down
-
-          #-----------------------------------
-          # 7) Tag & Push to ECR
-          #-----------------------------------
-          echo "🔨 Identifying built images..."
-          
-          FRONTEND_IMAGE_ID=$(docker images --filter=reference="source-nginx" --format "{{.ID}}")
-          BACKEND_IMAGE_ID=$(docker images --filter=reference="source-backend" --format "{{.ID}}")
-
-          if [ -z "$FRONTEND_IMAGE_ID" ] || [ -z "$BACKEND_IMAGE_ID" ]; then
-            echo "❌ Could not find built images source-nginx or source-backend!"
-            exit 1
-          fi
-
-          TIMESTAMP=$(date "+%Y%m%d.%H%M%S")
-          echo "✅ Found images. Using TIMESTAMP $TIMESTAMP for tagging."
-
-          # FRONTEND
-          docker tag "$FRONTEND_IMAGE_ID" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:frontend-$TIMESTAMP
-          docker tag "$FRONTEND_IMAGE_ID" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
-          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:frontend-$TIMESTAMP
-          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
-          
-          # BACKEND
-          docker tag "$BACKEND_IMAGE_ID" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:backend-$TIMESTAMP
-          docker tag "$BACKEND_IMAGE_ID" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
-          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:backend-$TIMESTAMP
-          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
-
-          # If we got here, ephemeral test & push succeeded!
-          echo "✅ Ephemeral test + push to ECR succeeded."
+            # Clone the source repo
+            git clone ${SOURCE_REPO_URL:-"https://github.com/satya-sh/DevOps_Midterm_Source.git"} source
+            cd source
+            
+            # Copy the .env file
+            cp ~/env_files/.env .
+            
+            # Build containers with docker-compose
+            echo "🛠 Building images with docker-compose.prod.yml..."
+            docker-compose -f docker-compose.prod.yml --env-file .env build
+            
+            # Start containers for smoke test
+            docker-compose -f docker-compose.prod.yml --env-file .env up -d
+            echo "Waiting 15s for containers to settle..."
+            sleep 15
+            
+            # Run smoke tests
+            echo "Running smoke tests..."
+            
+            # Check React root page
+            HTTP_ROOT=$(curl -i -s -L http://localhost)
+            echo "$HTTP_ROOT" | grep -q "200 OK"
+            echo "$HTTP_ROOT" | grep -qi "<html"
+            echo "✅ Root page is serving HTML."
+            
+            # Check the /api/books endpoint
+            API_RESP=$(curl -i -s -L http://localhost/api/books)
+            echo "$API_RESP" | grep -q "200 OK"
+            echo "$API_RESP" | grep -qi "\\[\\{\\|\\[\\]\\|\\{\\}"
+            echo "✅ /api/books returned 200 and JSON-like response."
+            
+            echo "Smoke tests succeeded."
+            
+            # Stop containers
+            docker-compose -f docker-compose.prod.yml --env-file .env down
+            
+            # Tag and push to ECR
+            echo "🔨 Identifying built images..."
+            
+            FRONTEND_IMAGE_ID=$(docker images --filter=reference="source-nginx" --format "{{.ID}}")
+            BACKEND_IMAGE_ID=$(docker images --filter=reference="source-backend" --format "{{.ID}}")
+            
+            if [ -z "$FRONTEND_IMAGE_ID" ] || [ -z "$BACKEND_IMAGE_ID" ]; then
+              echo "❌ Could not find built images source-nginx or source-backend!"
+              exit 1
+            fi
+            
+            TIMESTAMP=$(date "+%Y%m%d.%H%M%S")
+            echo "✅ Found images. Using TIMESTAMP $TIMESTAMP for tagging."
+            
+            # Tag and push frontend
+            docker tag "$FRONTEND_IMAGE_ID" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:frontend-$TIMESTAMP
+            docker tag "$FRONTEND_IMAGE_ID" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
+            docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:frontend-$TIMESTAMP
+            docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
+            
+            # Tag and push backend
+            docker tag "$BACKEND_IMAGE_ID" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:backend-$TIMESTAMP
+            docker tag "$BACKEND_IMAGE_ID" ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
+            docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:backend-$TIMESTAMP
+            docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
+            
+            echo "✅ Ephemeral test + push to ECR succeeded."
           EOF
 
-          # Replace placeholders with actual values
-          sed -i "s|__AWS_REGION__|${{ env.AWS_REGION }}|g" ec2_build_script.sh
-          sed -i "s|__AWS_ACCESS_KEY_ID__|${{ secrets.AWS_ACCESS_KEY_ID }}|g" ec2_build_script.sh
-          sed -i "s|__AWS_SECRET_ACCESS_KEY__|${{ secrets.AWS_SECRET_ACCESS_KEY }}|g" ec2_build_script.sh
-          sed -i "s|__AWS_SESSION_TOKEN__|${{ secrets.AWS_SESSION_TOKEN }}|g" ec2_build_script.sh
-          sed -i "s|__AWS_ACCOUNT_ID__|${{ secrets.AWS_ACCOUNT_ID }}|g" ec2_build_script.sh
-          sed -i "s|__SOURCE_REPO_URL__|${{ env.SOURCE_REPO_URL }}|g" ec2_build_script.sh
-          sed -i "s|__RDS_ENDPOINT__|${{ secrets.RDS_ENDPOINT }}|g" ec2_build_script.sh
-          sed -i "s|__RDS_USERNAME__|${{ secrets.RDS_USERNAME }}|g" ec2_build_script.sh
-          sed -i "s|__RDS_PASSWORD__|${{ secrets.RDS_PASSWORD }}|g" ec2_build_script.sh
-          sed -i "s|__RDS_DBNAME__|${{ secrets.RDS_DBNAME }}|g" ec2_build_script.sh
-
-          # Copy the script to the EC2 instance
-          scp -o StrictHostKeyChecking=no -i ec2-key.pem ec2_build_script.sh ec2-user@"$TEMP_HOST":/home/ec2-user/ec2_build_script.sh
-          
-          # Run the script on the EC2 instance
-          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@"$TEMP_HOST" "chmod +x /home/ec2-user/ec2_build_script.sh && /home/ec2-user/ec2_build_script.sh"
-
-        # If SSH or the remote commands fail, this entire step fails, which will trigger the "if: failure()" logic below.
-
       #-----------------------------------------------------------
-      # 7) Deploy to QA EC2 If Ephemeral Tests Succeeded
+      # 8) Deploy to QA EC2 If Ephemeral Tests Succeeded
       #-----------------------------------------------------------
       - name: Deploy to QA EC2
         if: success()
         run: |
           echo "Smoke test (ephemeral test) succeeded. Deploying latest images to QA..."
-          
-          # Create QA deployment script
-          cat > qa_deploy_script.sh << 'EOF'
-          #!/bin/bash
-          set -e
-          
-          # These variables will be replaced
-          AWS_REGION="__AWS_REGION__"
-          AWS_ACCESS_KEY_ID="__AWS_ACCESS_KEY_ID__"
-          AWS_SECRET_ACCESS_KEY="__AWS_SECRET_ACCESS_KEY__"
-          AWS_SESSION_TOKEN="__AWS_SESSION_TOKEN__"
-          AWS_ACCOUNT_ID="__AWS_ACCOUNT_ID__"
-          
-          # Export AWS credentials
-          export AWS_REGION
-          export AWS_ACCESS_KEY_ID
-          export AWS_SECRET_ACCESS_KEY
-          export AWS_SESSION_TOKEN
-          
-          # Re-log into ECR
-          aws ecr get-login-password --region ${AWS_REGION} \
-            | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
-          # Pull the new images
-          docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
-          docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
-
-          # Example: if you have a custom "docker-compose-qa.yml," use that. Or do your usual production docker-compose.
-          # For simplicity:
-          docker-compose down
-          docker-compose up -d
-          docker image prune -f
-
-          echo "✅ Deployed to QA EC2 successfully."
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }} << EOF
+            export AWS_REGION=${{ env.AWS_REGION }}
+            export AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+            export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            export AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}
+            export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+            
+            # Re-log into ECR
+            aws ecr get-login-password --region \${AWS_REGION} \
+              | docker login --username AWS --password-stdin \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com
+            
+            # Pull the new images
+            docker pull \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
+            docker pull \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
+            
+            # Deploy with docker-compose
+            docker-compose down
+            docker-compose up -d
+            docker image prune -f
+            
+            echo "✅ Deployed to QA EC2 successfully."
           EOF
-          
-          # Replace placeholders with actual values
-          sed -i "s|__AWS_REGION__|${{ env.AWS_REGION }}|g" qa_deploy_script.sh
-          sed -i "s|__AWS_ACCESS_KEY_ID__|${{ secrets.AWS_ACCESS_KEY_ID }}|g" qa_deploy_script.sh
-          sed -i "s|__AWS_SECRET_ACCESS_KEY__|${{ secrets.AWS_SECRET_ACCESS_KEY }}|g" qa_deploy_script.sh
-          sed -i "s|__AWS_SESSION_TOKEN__|${{ secrets.AWS_SESSION_TOKEN }}|g" qa_deploy_script.sh
-          sed -i "s|__AWS_ACCOUNT_ID__|${{ secrets.AWS_ACCOUNT_ID }}|g" qa_deploy_script.sh
-          
-          # Copy the script to the EC2 instance
-          scp -o StrictHostKeyChecking=no -i ec2-key.pem qa_deploy_script.sh ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }}:/home/ec2-user/qa_deploy_script.sh
-          
-          # Run the script on the EC2 instance
-          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }} "chmod +x /home/ec2-user/qa_deploy_script.sh && /home/ec2-user/qa_deploy_script.sh"
 
       #-----------------------------------------------------------
-      # 8) Delete Images in ECR if Ephemeral Test Fails
+      # 9) Delete Images in ECR if Ephemeral Test Fails
       #-----------------------------------------------------------
       - name: Delete Images in ECR if Test Fails
         if: failure()
         run: |
           echo "❌ Ephemeral test failed. Cleaning up Docker images in ECR..."
 
-          # The ephemeral EC2 step uses TIMESTAMP but we never stored it in GITHUB_ENV here,
-          # so we can do a best-effort approach or skip the fancy rollback. You could store the same
-          # TIMESTAMP in GITHUB_ENV if you want. Then use that for deletion.
-          # For example, if ephemeral steps fail, we might not have even pushed images successfully.
-          # Below is the original logic from your file, adapted:
-
+          # Best-effort approach for cleanup
           PRE_FRONTEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-frontend \
             --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
           PRE_BACKEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-backend \
             --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
 
-          # For demonstration, let's assume ephemeral test used "frontend-<TIMESTAMP>" / "backend-<TIMESTAMP>"
-          # We'll attempt to remove them. If they don't exist, it will just show "image not found".
-          # If you want to be certain, you'd do "aws ecr batch-delete-image --repository-name devops-midterm-frontend ..."
-
-          # Or skip the entire delete step if ephemeral test fails before pushing.
-
           echo "Could optionally remove newly pushed tags here if they exist..."
 
       #-----------------------------------------------------------
-      # 9) Terminate Temporary EC2
+      # 10) Terminate Temporary EC2
       #-----------------------------------------------------------
       - name: Terminate Temporary EC2 Instance
         if: always()
