@@ -125,6 +125,12 @@ jobs:
           ssh -i ec2-key.pem -o StrictHostKeyChecking=no ec2-user@"$PUBLIC_DNS" << 'EOF'
             set -e
 
+          # Export the same AWS credentials/region we have in GitHub Actions:
+            export AWS_REGION="${{ env.AWS_REGION }}"
+            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            export AWS_SESSION_TOKEN="${{ secrets.AWS_SESSION_TOKEN }}"   # if applicable
+
             echo "✅ Connected to ephemeral EC2. Installing Docker + Docker Compose..."
 
             # 2a) Install Docker + start it
