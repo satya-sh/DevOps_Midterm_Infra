@@ -171,8 +171,8 @@ jobs:
           set -e
 
           # Always fail immediately for testing purposes
-          # echo "❌ DELIBERATELY FAILING THE TEST TO TEST STEP 9"
-          # exit 1
+          echo "❌ DELIBERATELY FAILING THE TEST TO TEST STEP 9"
+          exit 1
 
           # Function to retry HTTP requests with timeout
           function retry_curl() {
