@@ -148,6 +148,8 @@ jobs:
           
             # 3) Pull your newly pushed images
             echo "Pulling the frontend + backend images from ECR..."
+            sudo aws ecr get-login-password --region "${AWS_REGION}" \
+              | sudo docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
             sudo docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
             sudo docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
 
