@@ -121,15 +121,15 @@ jobs:
 
           echo "Ephemeral Instance DNS: $PUBLIC_DNS"
 
-          # 2) SSH into that instance
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no ec2-user@"$PUBLIC_DNS" << 'EOF'
+          # 2) SSH into that instance - REMOVED QUOTES FROM HEREDOC TO ALLOW VARIABLE SUBSTITUTION
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no ec2-user@"$PUBLIC_DNS" << EOF
             set -e
 
-          # Export the same AWS credentials/region we have in GitHub Actions:
-            export AWS_REGION="${{ env.AWS_REGION }}"
-            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
-            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-            export AWS_SESSION_TOKEN="${{ secrets.AWS_SESSION_TOKEN }}"   # if applicable
+            # Export the AWS credentials/region from GitHub Actions:
+            export AWS_REGION=${{ env.AWS_REGION }}
+            export AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+            export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            export AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}
 
             echo "✅ Connected to ephemeral EC2. Installing Docker + Docker Compose..."
 
@@ -138,18 +138,18 @@ jobs:
             sudo service docker start
             sudo usermod -aG docker ec2-user
 
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" \
               -o /usr/local/bin/docker-compose
             sudo chmod +x /usr/local/bin/docker-compose
 
             # 2b) Log in to ECR so we can pull images
-            aws ecr get-login-password --region ${AWS_REGION} \
-              | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com
+            aws ecr get-login-password --region \${AWS_REGION} \
+              | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.\${AWS_REGION}.amazonaws.com
           
             # 3) Pull your newly pushed images
             echo "Pulling the frontend + backend images from ECR..."
-            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
-            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
 
             # 4) Run them in a quick test setup
             echo "Running containers on ephemeral EC2..."
@@ -157,12 +157,12 @@ jobs:
             version: "3.9"
             services:
               backend:
-                image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
+                image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
                 container_name: ephemeral-backend
                 expose:
                   - "8800"
               nginx:
-                image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
+                image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
                 container_name: ephemeral-frontend
                 ports:
                   - "80:80"
@@ -196,7 +196,7 @@ jobs:
               echo "✅ /api/books endpoint returned 200 and valid JSON"
             else
               echo "❌ /api/books returned 200 but did not contain JSON"
-            exit 1
+              exit 1
             fi
 
             # (C) A failing test (commented out)
