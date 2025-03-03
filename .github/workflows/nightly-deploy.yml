@@ -92,7 +92,7 @@ jobs:
         id: launch_ec2
         run: |
           INSTANCE_ID=$(aws ec2 run-instances \
-            --image-id ami-05b10e08d247fb927 \ 
+            --image-id ami-05b10e08d247fb927 \
             --count 1 \
             --instance-type t2.micro \
             --key-name EC2Key \
@@ -243,10 +243,10 @@ jobs:
           PRE_BACKEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-backend \
             --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
 
-          aws ecr batch-delete-image --repository-name book-app/frontend --image-ids imageTag=${{ env.TIMESTAMP }}
-          aws ecr batch-delete-image --repository-name book-app/frontend --image-ids imageTag=${{ env.IMAGE_TAG }}
-          aws ecr batch-delete-image --repository-name book-app/backend --image-ids imageTag=${{ env.TIMESTAMP }}
-          aws ecr batch-delete-image --repository-name book-app/backend --image-ids imageTag=${{ env.IMAGE_TAG }}
+          aws ecr batch-delete-image --repository-name devops-midterm-frontend --image-ids imageTag=${{ env.TIMESTAMP }}
+          aws ecr batch-delete-image --repository-name devops-midterm-frontend --image-ids imageTag=${{ env.IMAGE_TAG }}
+          aws ecr batch-delete-image --repository-name devops-midterm-backend --image-ids imageTag=${{ env.TIMESTAMP }}
+          aws ecr batch-delete-image --repository-name devops-midterm-backend --image-ids imageTag=${{ env.IMAGE_TAG }}
 
           if [ -z "$PRE_FRONTEND_IMAGE_TAG" ]; then
             echo "❌ No previous images found. Cannot restore 'latest'."
