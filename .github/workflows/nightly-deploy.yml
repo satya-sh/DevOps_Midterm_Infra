@@ -1,0 +1,202 @@
+name: Nightly Build and Deploy
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # Run nightly at 00:00 UTC
+  workflow_dispatch:
+
+jobs:
+  nightly-deployment:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      FRONTEND_REPO_NAME: devops-midterm-frontend  # ECR repository name for frontend
+      BACKEND_REPO_NAME: devops-midterm-backend    # ECR repository name for backend
+      IMAGE_TAG: nightly                           # We'll push "nightly" tag
+
+    steps:
+    # 1) Check out THIS (Infra) repo
+    - name: Check out Infra Repo
+      uses: actions/checkout@v3
+
+    # 2) Check out your Source Repo (Dockerfiles)
+    - name: Check out Source Repo
+      uses: actions/checkout@v3
+      with:
+        repository: satya-sh/DevOps_Source  # <<<CHANGE ME>>>
+        path: source
+
+    # 3) Configure AWS Credentials (for building/pushing to ECR)
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    # 4) Build Docker images in GitHub runner
+    - name: Build Docker Images
+      run: |
+        cd source
+        docker build -t devops_source-frontend:latest -f frontend/Dockerfile ./frontend
+        docker build -t devops_source-backend:latest -f backend/Dockerfile ./backend
+
+    # 5) Login to ECR
+    - name: AWS ECR Login
+      run: |
+        aws ecr get-login-password --region $AWS_REGION \
+          | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com
+
+    # 6) Tag + Push to ECR
+    - name: Tag and Push Images
+      run: |
+        FRONTEND_ID=$(docker images --filter=reference="devops_source-frontend" --format "{{.ID}}")
+        BACKEND_ID=$(docker images --filter=reference="devops_source-backend" --format "{{.ID}}")
+
+        TIMESTAMP=$(date "+%Y%m%d-%H%M%S")
+        echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+
+        # FRONTEND
+        docker tag "$FRONTEND_ID" "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.FRONTEND_REPO_NAME }}:${{ env.IMAGE_TAG }}"
+        docker tag "$FRONTEND_ID" "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.FRONTEND_REPO_NAME }}:$TIMESTAMP"
+        docker push --all-tags "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.FRONTEND_REPO_NAME }}"
+
+        # BACKEND
+        docker tag "$BACKEND_ID" "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.BACKEND_REPO_NAME }}:${{ env.IMAGE_TAG }}"
+        docker tag "$BACKEND_ID" "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.BACKEND_REPO_NAME }}:$TIMESTAMP"
+        docker push --all-tags "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.BACKEND_REPO_NAME }}"
+
+    # 7) Launch ephemeral EC2 for smoke testing
+    - name: Launch Ephemeral EC2
+      id: launch_ec2
+      run: |
+        INSTANCE_ID=$(aws ec2 run-instances \
+          --image-id ami-053a45fff0a704a47 \  # <<<CHANGE ME>>> Use an AMI valid in us-east-1
+          --count 1 \
+          --instance-type t2.micro \
+          --key-name <<<CHANGE ME>>> \
+          --security-group-ids <<<CHANGE ME>>> \
+          --subnet-id <<<CHANGE ME>>> \
+          --query 'Instances[0].InstanceId' \
+          --output text)
+        echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+
+        aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+        echo "Temp EC2 launched: $INSTANCE_ID"
+        sleep 10
+
+    # 8) Provide SSH key
+    - name: Setup SSH Key
+      run: |
+        echo "${{ secrets.EC2_PEM_KEY }}" > ephemeral.pem
+        chmod 400 ephemeral.pem
+
+    # 9) Ephemeral Smoke Test
+    - name: Ephemeral Test
+      run: |
+        PUBLIC_DNS=$(aws ec2 describe-instances \
+          --instance-ids ${{ env.INSTANCE_ID }} \
+          --query 'Reservations[0].Instances[0].PublicDnsName' \
+          --output text)
+
+        echo "Ephemeral instance DNS: $PUBLIC_DNS"
+
+        ssh -i ephemeral.pem -o StrictHostKeyChecking=no ec2-user@$PUBLIC_DNS << 'EOF'
+          # Install Docker + Docker Compose
+          sudo yum install -y docker
+          sudo service docker start
+          sudo usermod -aG docker ec2-user
+          sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          newgrp docker
+
+          # ECR login
+          aws ecr get-login-password --region $AWS_REGION \
+            | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com
+
+          # Pull newly tagged images
+          docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.FRONTEND_REPO_NAME }}:${{ env.IMAGE_TAG }}
+          docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.BACKEND_REPO_NAME }}:${{ env.IMAGE_TAG }}
+
+          # Create ephemeral docker-compose
+          cat <<TESTEOF > docker-compose-temp.yml
+          version: "3.9"
+          services:
+            backend:
+              image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.BACKEND_REPO_NAME }}:${{ env.IMAGE_TAG }}
+              container_name: ephemeral-backend
+              expose:
+                - "8800"
+              environment:
+                - DB_HOST=${{ secrets.RDS_ENDPOINT }}
+                - DB_USER=${{ secrets.RDS_USERNAME }}
+                - DB_PASSWORD=${{ secrets.RDS_PASSWORD }}
+                - DB_NAME=${{ secrets.RDS_DBNAME }}
+                - DB_PORT=3306
+
+            nginx:
+              image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.FRONTEND_REPO_NAME }}:${{ env.IMAGE_TAG }}
+              container_name: ephemeral-nginx
+              ports:
+                - "80:80"
+              depends_on:
+                - backend
+          TESTEOF
+
+          docker-compose -f docker-compose-temp.yml up -d
+          sleep 15
+
+          # Minimal cURL check: /api/books => 200, root => 200
+          echo "Testing ephemeral instance..."
+          curl -i -s http://localhost/api/books | grep -q "200 OK" || (echo "❌ /api/books check failed" && exit 1)
+          curl -i -s http://localhost/ | grep -q "200 OK" || (echo "❌ root index check failed" && exit 1)
+
+          echo "✅ Ephemeral test succeeded on $PUBLIC_DNS"
+
+          # Optional cleanup
+          docker-compose -f docker-compose-temp.yml down
+EOF
+
+    # 10) Deploy to MAIN EC2 if ephemeral test passes
+    - name: Deploy to Main EC2
+      if: success()
+      run: |
+        echo "Ephemeral tests passed. Deploying to main instance..."
+
+        ssh -i ephemeral.pem -o StrictHostKeyChecking=no ec2-user@${{ secrets.MAIN_EC2_PUBLIC_DNS }} << 'EOF'
+          aws ecr get-login-password --region $AWS_REGION \
+            | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com
+
+          cd /home/ec2-user/DevOps_Source
+          docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.FRONTEND_REPO_NAME }}:${{ env.IMAGE_TAG }}
+          docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/${{ env.BACKEND_REPO_NAME }}:${{ env.IMAGE_TAG }}
+
+          # If you have a .env on main or are referencing secrets differently, ensure it's set.
+          docker-compose -f docker-compose.prod.yml down
+          docker-compose -f docker-compose.prod.yml up -d
+EOF
+
+    # 11) Remove images from ECR if ephemeral test fails (optional)
+    - name: Rollback / Cleanup
+      if: failure()
+      run: |
+        echo "Ephemeral test failed, removing newly pushed images..."
+        echo "TIMESTAMP is ${{ env.TIMESTAMP }}"
+
+        # Example removing images
+        # aws ecr batch-delete-image --repository-name $FRONTEND_REPO_NAME \
+        #   --image-ids imageTag=$TIMESTAMP imageTag=${IMAGE_TAG}
+        # aws ecr batch-delete-image --repository-name $BACKEND_REPO_NAME \
+        #   --image-ids imageTag=$TIMESTAMP imageTag=${IMAGE_TAG}
+
+    # 12) Terminate ephemeral EC2 (always run)
+    - name: Terminate Temp EC2
+      if: always()
+      run: |
+        if [ -n "${{ env.INSTANCE_ID }}" ]; then
+          echo "Terminating ephemeral EC2: ${{ env.INSTANCE_ID }}"
+          aws ec2 terminate-instances --instance-ids ${{ env.INSTANCE_ID }}
+        else
+          echo "No ephemeral EC2 to terminate."
+        fi
