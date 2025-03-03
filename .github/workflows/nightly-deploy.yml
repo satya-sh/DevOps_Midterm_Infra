@@ -56,8 +56,8 @@ jobs:
         run: |
           # Get the Docker Image ID
           docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}"
-          FRONTEND_IMAGE_ID=$(docker images --filter=reference="devops_midterm_source-nginx" --format "{{.ID}}")
-          BACKEND_IMAGE_ID=$(docker images --filter=reference="devops_midterm_source-backend" --format "{{.ID}}")
+          FRONTEND_IMAGE_ID=$(docker images --filter=reference="source-nginx" --format "{{.ID}}")
+          BACKEND_IMAGE_ID=$(docker images --filter=reference="source-backend" --format "{{.ID}}")
 
           echo "Frontend: $FRONTEND_IMAGE_ID"
           echo "Backend: $BACKEND_IMAGE_ID"
