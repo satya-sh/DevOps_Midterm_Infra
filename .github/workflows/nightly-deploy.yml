@@ -41,3 +41,40 @@ jobs:
           # We pass --env-file .env so docker compose can read those variables
           docker compose -f docker-compose.prod.yml --env-file .env up -d --build
           sleep 20  # wait for containers to spin up
+        
+      # 4) Configure AWS Credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+        
+      # 5) Push image to ECR
+      - name: Push image to ECR
+        run: |
+          # Get the Docker Image ID
+          FRONTEND_IMAGE_ID=$(docker images --filter=reference="devops_midterm_source-nginx" --format "{{.ID}}")
+          BACKEND_IMAGE_ID=$(docker images --filter=reference="devops_midterm_source-backend" --format "{{.ID}}")
+
+          echo "Found Docker Image ID (frontend): $FRONTEND_IMAGE_ID"
+          echo "Found Docker Image ID (backend): $BACKEND_IMAGE_ID"
+
+          # 2) Login to ECR
+          aws ecr get-login-password --region $AWS_REGION \
+            | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com
+
+          # 3) Generate a timestamp tag
+          TIMESTAMP=$(date "+%Y%m%d.%H%M%S")
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+
+          # 4) Tag & push the FRONTEND image to ECR devops-midterm-frontend
+          docker tag "$FRONTEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-frontend:$TIMESTAMP
+          docker tag "$FRONTEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-frontend:latest
+          docker push --all-tags ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-frontend
+
+          # 5) Tag & push the BACKEND image to ECR devops-midterm-backend
+          docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend:$TIMESTAMP
+          docker tag "$BACKEND_IMAGE_ID" ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend:latest
+          docker push --all-tags ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/devops-midterm-backend
