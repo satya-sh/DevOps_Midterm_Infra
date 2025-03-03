@@ -135,6 +135,36 @@ jobs:
           export SOURCE_REPO_URL=${{ env.SOURCE_REPO_URL }}
           EOF
           
+          # Create a simplified nginx test configuration
+          cat > nginx_test_conf.txt << 'EOF'
+          server {
+              listen 80;
+          
+              # Proxy /api requests to backend
+              location /api/ {
+                  proxy_pass http://backend:8800/;
+              }
+          
+              # React fallback
+              location / {
+                  root /usr/share/nginx/html;
+                  try_files $uri /index.html;
+              }
+          }
+          EOF
+          
+          # Create a docker-compose test override
+          cat > docker_compose_test_override.txt << 'EOF'
+          version: "3.9"
+          
+          services:
+            nginx:
+              ports:
+                - "80:80"
+              volumes:
+                - ./nginx-test-conf:/etc/nginx/conf.d
+          EOF
+          
           # Create enhanced smoke test script with debugging and retries
           cat > smoke_tests.sh << 'EOF'
           #!/bin/bash
@@ -218,6 +248,8 @@ jobs:
           scp -o StrictHostKeyChecking=no -i ec2-key.pem .env ec2-user@"$TEMP_HOST":~/env_files/
           scp -o StrictHostKeyChecking=no -i ec2-key.pem aws_creds.sh ec2-user@"$TEMP_HOST":~/env_files/
           scp -o StrictHostKeyChecking=no -i ec2-key.pem smoke_tests.sh ec2-user@"$TEMP_HOST":~/env_files/
+          scp -o StrictHostKeyChecking=no -i ec2-key.pem nginx_test_conf.txt ec2-user@"$TEMP_HOST":~/env_files/
+          scp -o StrictHostKeyChecking=no -i ec2-key.pem docker_compose_test_override.txt ec2-user@"$TEMP_HOST":~/env_files/
           
           # Make smoke test script executable
           ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@"$TEMP_HOST" "chmod +x ~/env_files/smoke_tests.sh"
@@ -245,6 +277,11 @@ jobs:
             git clone ${SOURCE_REPO_URL} source
             cd source
             
+            # Set up test nginx configuration
+            mkdir -p nginx-test-conf
+            cp ~/env_files/nginx_test_conf.txt nginx-test-conf/default.conf
+            cp ~/env_files/docker_compose_test_override.txt docker-compose.test.yml
+            
             # Copy the .env file
             cp ~/env_files/.env .
             
@@ -252,9 +289,9 @@ jobs:
             echo "🛠 Building images with docker-compose.prod.yml..."
             docker-compose -f docker-compose.prod.yml --env-file .env build
             
-            # Start containers for smoke test
-            echo "Starting containers with docker-compose..."
-            docker-compose -f docker-compose.prod.yml --env-file .env up -d
+            # Start containers for smoke test with test configuration
+            echo "Starting containers with docker-compose and test override..."
+            docker-compose -f docker-compose.prod.yml -f docker-compose.test.yml --env-file .env up -d
             
             # Check container names
             echo "Checking container names that were created:"
@@ -268,7 +305,7 @@ jobs:
             ~/env_files/smoke_tests.sh
             
             # Stop containers
-            docker-compose -f docker-compose.prod.yml --env-file .env down
+            docker-compose -f docker-compose.prod.yml -f docker-compose.test.yml --env-file .env down
             
             # Tag and push to ECR
             echo "🔨 Identifying built images..."
