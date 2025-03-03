@@ -132,11 +132,48 @@ jobs:
           export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
           export AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}
           export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+          export SOURCE_REPO_URL=${{ env.SOURCE_REPO_URL }}
+          EOF
+          
+          # Create smoke test script with your specified tests
+          cat > smoke_tests.sh << 'EOF'
+          #!/bin/bash
+          set -e
+
+          # (A) Check the root URL:
+          echo "Checking React frontend at root URL..."
+          HTTP_ROOT=$(curl -i -s -L -k http://localhost/)
+          echo "$HTTP_ROOT" | grep -q "200 OK"
+          echo "$HTTP_ROOT" | grep -qi "<html"
+          echo "✅ Root URL returned 200 and HTML"
+
+          # (B) Check the /api/books endpoint:
+          echo "Checking backend API: GET /api/books..."
+          HTTP_API=$(curl -i -s -L -k http://localhost/api/books)
+          echo "$HTTP_API" | grep -q "200 OK"
+          JSON_BODY=$(echo "$HTTP_API" | awk '/^\[|^\{/{flag=1} flag{print}')
+          if [[ "$JSON_BODY" =~ ^(\[|\{) ]]; then
+            echo "✅ /api/books endpoint returned 200 and valid JSON"
+          else
+            echo "❌ /api/books returned 200 but did not contain JSON"
+            exit 1
+          fi
+
+          # (C) A failing test (commented out)
+          # echo "Simulating a failing test..."
+          # curl -f http://localhost/this-route-doesnt-exist  # Will fail with exit code 22
+          # echo "❌ Should never get here, because above line fails."
+
+          echo "All smoke tests passed successfully!"
           EOF
           
           # Copy files to EC2 instance
           scp -o StrictHostKeyChecking=no -i ec2-key.pem .env ec2-user@"$TEMP_HOST":~/env_files/
           scp -o StrictHostKeyChecking=no -i ec2-key.pem aws_creds.sh ec2-user@"$TEMP_HOST":~/env_files/
+          scp -o StrictHostKeyChecking=no -i ec2-key.pem smoke_tests.sh ec2-user@"$TEMP_HOST":~/env_files/
+          
+          # Make smoke test script executable
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@"$TEMP_HOST" "chmod +x ~/env_files/smoke_tests.sh"
 
       #-----------------------------------------------------------
       # 7) SSH in again to build and test (after group membership is active)
@@ -158,7 +195,7 @@ jobs:
               | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
             # Clone the source repo
-            git clone ${SOURCE_REPO_URL:-"https://github.com/satya-sh/DevOps_Midterm_Source.git"} source
+            git clone ${SOURCE_REPO_URL} source
             cd source
             
             # Copy the .env file
@@ -173,22 +210,9 @@ jobs:
             echo "Waiting 15s for containers to settle..."
             sleep 15
             
-            # Run smoke tests
+            # Run the smoke tests from the script (your specified tests)
             echo "Running smoke tests..."
-            
-            # Check React root page
-            HTTP_ROOT=$(curl -i -s -L http://localhost)
-            echo "$HTTP_ROOT" | grep -q "200 OK"
-            echo "$HTTP_ROOT" | grep -qi "<html"
-            echo "✅ Root page is serving HTML."
-            
-            # Check the /api/books endpoint
-            API_RESP=$(curl -i -s -L http://localhost/api/books)
-            echo "$API_RESP" | grep -q "200 OK"
-            echo "$API_RESP" | grep -qi "\\[\\{\\|\\[\\]\\|\\{\\}"
-            echo "✅ /api/books returned 200 and JSON-like response."
-            
-            echo "Smoke tests succeeded."
+            ~/env_files/smoke_tests.sh
             
             # Stop containers
             docker-compose -f docker-compose.prod.yml --env-file .env down
