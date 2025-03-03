@@ -389,16 +389,18 @@ jobs:
             # Re-log into ECR
             aws ecr get-login-password --region \${AWS_REGION} \
               | docker login --username AWS --password-stdin \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com
+
+            docker-compose -f docker-compose.prod.yml --env-file .env down -v
+
+            docker rmi devops_midterm_source-nginx devops_midterm_source-backend || true
             
             # Pull the new images
             docker pull \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-frontend:latest
             docker pull \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/devops-midterm-backend:latest
             
-            # Stop existing containers
-            docker-compose -f docker-compose.prod.yml --env-file .env down -v
-            
-            # Start with ECR images using the ECR-specific compose file
-            docker-compose -f docker-compose.ecr.yml up -d
+            docker-compose -f docker-compose.ecr.yml --env-file .env up -d
+
+            docker ps
             
             # Clean up old images
             docker image prune -f
