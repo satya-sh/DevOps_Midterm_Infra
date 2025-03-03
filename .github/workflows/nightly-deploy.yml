@@ -376,7 +376,9 @@ jobs:
           EOF
           
           # Copy the file to QA server
-          scp -o StrictHostKeyChecking=no -i ec2-key.pem docker-compose.ecr.yml ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }}:~/docker-compose.ecr.yml
+          scp -o StrictHostKeyChecking=no -i ec2-key.pem \
+            docker-compose.ecr.yml \
+            ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }}:/home/ec2-user/DevOps_Midterm_Source/docker-compose.ecr.yml
           
           # Deploy using the ECR config
           ssh -o StrictHostKeyChecking=no -i ec2-key.pem ec2-user@${{ secrets.QA_EC2_PUBLIC_DNS }} << EOF
