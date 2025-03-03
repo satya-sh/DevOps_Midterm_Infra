@@ -90,7 +90,7 @@ jobs:
             set -e
             echo "✅ Connected to ephemeral EC2. Installing Docker + Docker Compose..."
             sudo yum update -y
-            sudo yum install -y docker git
+            sudo yum install -y docker git jq
             sudo service docker start
             sudo usermod -aG docker ec2-user
             
@@ -135,36 +135,83 @@ jobs:
           export SOURCE_REPO_URL=${{ env.SOURCE_REPO_URL }}
           EOF
           
-          # Create smoke test script with your specified tests
+          # Create enhanced smoke test script with debugging and retries
           cat > smoke_tests.sh << 'EOF'
           #!/bin/bash
           set -e
 
-          # (A) Check the root URL:
-          echo "Checking React frontend at root URL..."
-          HTTP_ROOT=$(curl -i -s -L -k http://localhost/)
-          echo "$HTTP_ROOT" | grep -q "200 OK"
-          echo "$HTTP_ROOT" | grep -qi "<html"
-          echo "✅ Root URL returned 200 and HTML"
+          # Function to retry HTTP requests with timeout
+          function retry_curl() {
+            local URL=$1
+            local MAX_RETRIES=5
+            local RETRY_DELAY=5
+            local COUNT=0
+            local EXIT_CODE=0
+            local RESPONSE=""
 
-          # (B) Check the /api/books endpoint:
-          echo "Checking backend API: GET /api/books..."
-          HTTP_API=$(curl -i -s -L -k http://localhost/api/books)
-          echo "$HTTP_API" | grep -q "200 OK"
-          JSON_BODY=$(echo "$HTTP_API" | awk '/^\[|^\{/{flag=1} flag{print}')
-          if [[ "$JSON_BODY" =~ ^(\[|\{) ]]; then
-            echo "✅ /api/books endpoint returned 200 and valid JSON"
+            echo "Attempting to connect to $URL (with retries)..."
+            
+            until [ $COUNT -ge $MAX_RETRIES ]; do
+              RESPONSE=$(curl -i -s -L -k $URL --max-time 10 || echo "CURL_FAILED")
+              
+              if [[ "$RESPONSE" != "CURL_FAILED" ]] && [[ "$RESPONSE" == *"200 OK"* ]]; then
+                echo "✅ Successfully connected to $URL on attempt $((COUNT+1))"
+                echo "$RESPONSE" > /tmp/curl_response.txt
+                return 0
+              fi
+              
+              echo "⚠️ Attempt $((COUNT+1)) failed - waiting ${RETRY_DELAY}s before retrying..."
+              sleep $RETRY_DELAY
+              COUNT=$((COUNT+1))
+            done
+            
+            echo "❌ Failed to connect to $URL after $MAX_RETRIES attempts"
+            return 1
+          }
+
+          # Check docker container status
+          echo "--- Checking Docker container status ---"
+          docker ps -a
+
+          # Check logs for containers
+          echo "--- Displaying nginx container logs ---"
+          docker logs nginx || echo "Could not get nginx logs"
+          
+          echo "--- Displaying backend container logs ---"
+          docker logs backend || echo "Could not get backend logs"
+          
+          # (A) Check the root URL
+          echo "--- Checking React frontend at root URL ---"
+          if retry_curl "http://localhost/"; then
+            HTTP_ROOT=$(cat /tmp/curl_response.txt)
+            echo "$HTTP_ROOT" | grep -q "200 OK"
+            echo "$HTTP_ROOT" | grep -qi "<html"
+            echo "✅ Root URL returned 200 and HTML"
           else
-            echo "❌ /api/books returned 200 but did not contain JSON"
+            echo "❌ Failed to connect to frontend"
             exit 1
           fi
 
-          # (C) A failing test (commented out)
-          # echo "Simulating a failing test..."
-          # curl -f http://localhost/this-route-doesnt-exist  # Will fail with exit code 22
-          # echo "❌ Should never get here, because above line fails."
+          # (B) Check the API endpoint
+          echo "--- Checking backend API: GET /api/books ---"
+          if retry_curl "http://localhost/api/books"; then
+            HTTP_API=$(cat /tmp/curl_response.txt)
+            echo "$HTTP_API" | grep -q "200 OK"
+            JSON_BODY=$(echo "$HTTP_API" | awk '/^\[|^\{/{flag=1} flag{print}')
+            if [[ "$JSON_BODY" =~ ^(\[|\{) ]]; then
+              echo "✅ /api/books endpoint returned 200 and valid JSON"
+              echo "JSON response: $JSON_BODY"
+            else
+              echo "❌ /api/books returned 200 but did not contain JSON"
+              exit 1
+            fi
+          else
+            echo "❌ Failed to connect to API endpoint"
+            exit 1
+          fi
 
-          echo "All smoke tests passed successfully!"
+          # All tests passed!
+          echo "✅ All smoke tests passed successfully!"
           EOF
           
           # Copy files to EC2 instance
@@ -206,11 +253,17 @@ jobs:
             docker-compose -f docker-compose.prod.yml --env-file .env build
             
             # Start containers for smoke test
+            echo "Starting containers with docker-compose..."
             docker-compose -f docker-compose.prod.yml --env-file .env up -d
-            echo "Waiting 15s for containers to settle..."
-            sleep 15
             
-            # Run the smoke tests from the script (your specified tests)
+            # Check container names
+            echo "Checking container names that were created:"
+            docker ps --format "{{.Names}}"
+            
+            echo "Waiting 30s for containers to fully initialize..."
+            sleep 30
+            
+            # Run the enhanced smoke tests from the script
             echo "Running smoke tests..."
             ~/env_files/smoke_tests.sh
             
