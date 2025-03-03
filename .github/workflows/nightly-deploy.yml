@@ -55,11 +55,17 @@ jobs:
       - name: Push image to ECR
         run: |
           # Get the Docker Image ID
+          docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}"
           FRONTEND_IMAGE_ID=$(docker images --filter=reference="devops_midterm_source-nginx" --format "{{.ID}}")
           BACKEND_IMAGE_ID=$(docker images --filter=reference="devops_midterm_source-backend" --format "{{.ID}}")
 
-          echo "Found Docker Image ID (frontend): $FRONTEND_IMAGE_ID"
-          echo "Found Docker Image ID (backend): $BACKEND_IMAGE_ID"
+          echo "Frontend: $FRONTEND_IMAGE_ID"
+          echo "Backend: $BACKEND_IMAGE_ID"
+
+          if [ -z "$BACKEND_IMAGE_ID" ] || [ -z "$FRONTEND_IMAGE_ID" ]; then
+            echo "❌ No local images found for 'devops_midterm_source-backend' or 'devops_midterm_source-nginx'."
+            exit 1
+          fi
 
           # 2) Login to ECR
           aws ecr get-login-password --region $AWS_REGION \
