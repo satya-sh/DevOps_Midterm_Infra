@@ -25,3 +25,19 @@ jobs:
         with:
           repository: "satya-sh/DevOps_Midterm_Source"
           path: "source"  # Directory where the repo will be cloned
+
+      # 3) Build and Start Containers Using Docker Compose (optional local test)
+      - name: Build and Start Containers Using Docker Compose
+        run: |
+          cd source
+          # Create a .env file from GitHub Secrets
+          cat <<EOF > .env
+          DB_HOST=${{ secrets.RDS_ENDPOINT }}
+          DB_USER=${{ secrets.RDS_USERNAME }}
+          DB_PASSWORD=${{ secrets.RDS_PASSWORD }}
+          DB_NAME=${{ secrets.RDS_DBNAME }}
+          DB_PORT=3306
+          EOF
+          # We pass --env-file .env so docker compose can read those variables
+          docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+          sleep 20  # wait for containers to spin up
