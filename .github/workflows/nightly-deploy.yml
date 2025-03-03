@@ -209,7 +209,7 @@ jobs:
             echo "✅ All ephemeral smoke tests passed successfully on ephemeral instance!"
 
             # 6) Stop containers
-            docker compose -f docker-compose-test.yml down
+            sudo docker compose -f docker-compose-test.yml down
 
             # Done
             exit 0
