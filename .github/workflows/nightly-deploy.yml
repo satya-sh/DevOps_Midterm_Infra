@@ -407,23 +407,7 @@ jobs:
             
             echo "✅ Deployed to QA EC2 successfully."
           EOF
-
-      #-----------------------------------------------------------
-      # 9) Delete Images in ECR if Ephemeral Test Fails
-      #-----------------------------------------------------------
-      - name: Delete Images in ECR if Test Fails
-        if: failure()
-        run: |
-          echo "❌ Ephemeral test failed. Cleaning up Docker images in ECR..."
-
-          # Best-effort approach for cleanup
-          PRE_FRONTEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-frontend \
-            --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
-          PRE_BACKEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-backend \
-            --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
-
-          echo "Could optionally remove newly pushed tags here if they exist..."
-
+                
       #-----------------------------------------------------------
       # 10) Terminate Temporary EC2
       #-----------------------------------------------------------
