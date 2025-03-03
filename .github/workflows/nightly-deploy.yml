@@ -2,7 +2,7 @@ name: Nightly Deployment Workflow
 
 on:
   schedule:
-    - cron: "0 0 * * *"  # Runs nightly at midnight UTC
+    - cron: "0 8 * * *"  # Runs nightly at midnight 
   workflow_dispatch:
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
 
     steps:
       #-----------------------------------------------------------
-      # 1) (Optional) Checkout THIS Infra Repo (for versioned workflow files)
+      # 1) Checkout Infra Repo (for versioned workflow files)
       #-----------------------------------------------------------
       - name: Checkout Infra Repo
         uses: actions/checkout@v4
@@ -33,7 +33,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       #-----------------------------------------------------------
-      # 3) Launch the Ephemeral EC2
+      # 3) Launch the Temp EC2
       #-----------------------------------------------------------
       - name: Launch Temporary EC2 for Build/Test
         id: launch_ec2
@@ -57,7 +57,7 @@ jobs:
           sleep 15
 
       #-----------------------------------------------------------
-      # 4) Create SSH Key Locally (from your GitHub secret)
+      # 4) Create SSH Key Locally (from GitHub secret)
       #-----------------------------------------------------------
       - name: Set up SSH Key
         run: |
@@ -65,7 +65,7 @@ jobs:
           chmod 400 ec2-key.pem
 
       #-----------------------------------------------------------
-      # 5) Get the Public IP/Hostname of ephemeral EC2
+      # 5) Get the Public IP/Hostname of temp EC2
       #-----------------------------------------------------------
       - name: Fetch Ephemeral EC2 Hostname
         id: get_temp_ec2
@@ -341,12 +341,12 @@ jobs:
           EOF
 
       #-----------------------------------------------------------
-      # 8) Deploy to QA EC2 If Ephemeral Tests Succeeded
+      # 8) Deploy to QA EC2 If smoke Tests Succeeded
       #-----------------------------------------------------------
       - name: Deploy to QA EC2
         if: success()
         run: |
-          echo "Smoke test (ephemeral test) succeeded. Deploying latest images to QA..."
+          echo "Smoke test succeeded. Deploying latest images to QA..."
           
           # Create ECR-specific docker-compose file locally
           cat > docker-compose.ecr.yml << EOF
@@ -419,23 +419,7 @@ jobs:
           EOF
 
       #-----------------------------------------------------------
-      # 9) Delete Images in ECR if Ephemeral Test Fails
-      #-----------------------------------------------------------
-      - name: Delete Images in ECR if Test Fails
-        if: failure()
-        run: |
-          echo "❌ Ephemeral test failed. Cleaning up Docker images in ECR..."
-
-          # Best-effort approach for cleanup
-          PRE_FRONTEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-frontend \
-            --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
-          PRE_BACKEND_IMAGE_TAG=$(aws ecr list-images --repository-name devops-midterm-backend \
-            --query 'imageIds[?imageTag!=`latest`].[imageTag]' --output text | sort -r | sed -n '2p')
-
-          echo "Could optionally remove newly pushed tags here if they exist..."
-
-      #-----------------------------------------------------------
-      # 10) Terminate Temporary EC2
+      # 9) Terminate Temporary EC2
       #-----------------------------------------------------------
       - name: Terminate Temporary EC2 Instance
         if: always()
